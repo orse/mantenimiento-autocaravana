@@ -181,6 +181,10 @@
   <div class="card">
     <h2 id="formTitulo">Nuevo mantenimiento</h2>
     <form id="form">
+      <button type="button" class="btn-secondary" id="btnFactura">📷 Foto de la factura y rellenar</button>
+      <input type="file" id="inputFactura" accept="image/*" capture="environment" class="oculto">
+      <p id="estadoFactura" class="nota oculto"></p>
+
       <label for="fecha">Fecha</label>
       <input type="date" id="fecha" required>
 
@@ -217,10 +221,176 @@
     <button id="exportar" class="btn-secondary" type="button">Descargar copia (JSON)</button>
     <button id="importarBtn" class="btn-secondary" type="button">Restaurar copia</button>
     <input type="file" id="importar" accept="application/json,.json" class="oculto">
-    <p class="nota">Los registros y sus fotos o archivos se guardan solo en este dispositivo; no se publican en internet. La copia descargada incluye también los adjuntos, así que puede pesar bastante: descárgala de vez en cuando y con «Restaurar copia» puedes recuperarlo todo aquí o en otro dispositivo.</p>
+    <p class="nota">Los registros y sus fotos o archivos se guardan solo en este dispositivo; no se publican en internet. La lectura de la factura también se hace en el propio dispositivo (solo la primera vez descarga el lector de internet). La copia descargada incluye también los adjuntos, así que puede pesar bastante: descárgala de vez en cuando y con «Restaurar copia» puedes recuperarlo todo aquí o en otro dispositivo.</p>
   </div>
 </main>
 
+<script>
+/* ========== Análisis del texto de una factura (sin DOM, probado aparte) ========== */
+var FacturaParse = (function () {
+  var MESES = {
+    enero: 1, febrero: 2, marzo: 3, abril: 4, mayo: 5, junio: 6,
+    julio: 7, agosto: 8, septiembre: 9, setiembre: 9, octubre: 10,
+    noviembre: 11, diciembre: 12
+  };
+
+  /* «1.234,56» / «1234,56» / «1.234» / «1234.56» -> número */
+  function parseNumero(txt) {
+    if (txt == null) return NaN;
+    var s = String(txt).replace(/[\s€]/g, '');
+    if (!s) return NaN;
+    if (s.indexOf(',') !== -1) {
+      s = s.replace(/\./g, '').replace(',', '.');
+    } else {
+      var partes = s.split('.');
+      if (partes.length > 2 || (partes.length === 2 && partes[1].length === 3)) {
+        s = s.replace(/\./g, '');
+      }
+    }
+    var n = parseFloat(s);
+    return isFinite(n) ? n : NaN;
+  }
+
+  var RE_IMPORTE = /\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d+,\d{1,2}|\d+\.\d{2}|\d{2,}/g;
+
+  function importesDe(linea) {
+    var lista = [];
+    var m;
+    RE_IMPORTE.lastIndex = 0;
+    while ((m = RE_IMPORTE.exec(linea))) {
+      var n = parseNumero(m[0]);
+      if (isFinite(n)) lista.push(n);
+    }
+    return lista;
+  }
+
+  function fechaValida(d, m, y) {
+    var ahora = new Date();
+    if (y < 2015 || y > ahora.getFullYear()) return null;
+    if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+    var f = new Date(y, m - 1, d);
+    if (f.getFullYear() !== y || f.getMonth() !== m - 1 || f.getDate() !== d) return null;
+    var mañana = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate() + 1);
+    if (f >= mañana) return null;
+    return f;
+  }
+
+  function isoDe(f) {
+    function dos(n) { return (n < 10 ? '0' : '') + n; }
+    return f.getFullYear() + '-' + dos(f.getMonth() + 1) + '-' + dos(f.getDate());
+  }
+
+  function extraerFecha(texto) {
+    var candidatas = [];
+    texto.split('\n').forEach(function (linea) {
+      var prio = /fecha/i.test(linea) ? 1 : 0;
+      var re = /\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})\b/g;
+      var m;
+      while ((m = re.exec(linea))) {
+        var f = fechaValida(+m[1], +m[2], +m[3]);
+        if (f) candidatas.push({ f: f, prio: prio });
+      }
+      var re2 = /(\d{1,2})\s+de\s+([a-záéíóúñ]+)\s+de(?:l)?\s+(\d{4})/gi;
+      while ((m = re2.exec(linea))) {
+        var mes = MESES[m[2].toLowerCase()];
+        if (!mes) continue;
+        var f2 = fechaValida(+m[1], mes, +m[3]);
+        if (f2) candidatas.push({ f: f2, prio: prio });
+      }
+    });
+    if (!candidatas.length) return null;
+    candidatas.sort(function (a, b) {
+      if (a.prio !== b.prio) return b.prio - a.prio;
+      return b.f - a.f;
+    });
+    return isoDe(candidatas[0].f);
+  }
+
+  function extraerCoste(texto) {
+    var mejor = null;
+    texto.split('\n').forEach(function (linea) {
+      var l = linea.toLowerCase();
+      if (l.indexOf('total') === -1) return;
+      if (/subtotal|base\s*imponible/.test(l)) return;
+      importesDe(linea).forEach(function (n) {
+        if (mejor === null || n > mejor) mejor = n;
+      });
+    });
+    return mejor;
+  }
+
+  function extraerKm(texto) {
+    var lineas = texto.split('\n');
+    var i, m, n;
+    for (i = 0; i < lineas.length; i++) {
+      if (!/kilometr|\bkms?\b/i.test(lineas[i])) continue;
+      var re = /(\d[\d.]*\d)\s*(?:km|kms|kil[oó]metros)\b/gi;
+      while ((m = re.exec(lineas[i]))) {
+        n = Math.round(parseNumero(m[1]));
+        if (n >= 500 && n <= 1500000) return n;
+      }
+    }
+    for (i = 0; i < lineas.length; i++) {
+      if (!/kilometr|\bkms?\b/i.test(lineas[i])) continue;
+      var re2 = /(\d[\d.]{2,}\d)/g;
+      while ((m = re2.exec(lineas[i]))) {
+        n = Math.round(parseNumero(m[1]));
+        if (n >= 500 && n <= 1500000) return n;
+      }
+    }
+    return null;
+  }
+
+  var CLAVES = [
+    'aceite', 'filtro', 'neumático', 'neumatico', 'rueda', 'freno', 'pastilla',
+    'batería', 'bateria', 'correa', 'distribución', 'distribucion', 'itv',
+    'revisión', 'revision', 'amortiguador', 'escape', 'refrigerante',
+    'anticongelante', 'alineado', 'equilibrado', 'suspensión', 'suspension',
+    'embrague', 'inyector', 'bujía', 'bujia', 'calentador', 'cambio',
+    'sustitución', 'sustitucion', 'reparación', 'reparacion', 'montaje', 'regeneración', 'regeneracion'
+  ];
+
+  function extraerTrabajo(texto) {
+    var vistos = [];
+    texto.split('\n').forEach(function (linea) {
+      var l = linea.replace(/\s+/g, ' ').trim();
+      if (l.length < 4 || l.length > 160) return;
+      var lower = l.toLowerCase();
+      if (/total|subtotal|base imponible|\biva\b|importe|precio|descuento|forma de pago|factura|\bnif\b|\bcif\b|tel[eé]fono|cliente|veh[ií]culo|matr[ií]cula/.test(lower)) return;
+      var es = CLAVES.some(function (c) { return lower.indexOf(c) !== -1; });
+      if (!es) return;
+      l = l.replace(/\.{3,}.*$/, '');
+      l = l.replace(/\s*[-–—_.\s]*\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?\s*€?\s*$/, '');
+      l = l.trim();
+      if (l.length < 4) return;
+      l = l.charAt(0).toUpperCase() + l.slice(1);
+      if (vistos.indexOf(l) === -1) vistos.push(l);
+    });
+    if (!vistos.length) return null;
+    var salida = vistos.slice(0, 3).join('; ');
+    return salida.length > 180 ? salida.slice(0, 177) + '…' : salida;
+  }
+
+  function analizar(texto) {
+    return {
+      fecha: extraerFecha(texto),
+      coste: extraerCoste(texto),
+      km: extraerKm(texto),
+      trabajo: extraerTrabajo(texto)
+    };
+  }
+
+  return {
+    analizar: analizar,
+    parseNumero: parseNumero,
+    extraerFecha: extraerFecha,
+    extraerCoste: extraerCoste,
+    extraerKm: extraerKm,
+    extraerTrabajo: extraerTrabajo
+  };
+})();
+/* ========== fin FacturaParse ========== */
+</script>
 <script>
 (function () {
   var CLAVE = 'mantenimientos_autocaravana';
@@ -412,6 +582,108 @@
     e.target.value = '';
   });
 
+  /* ---------- Leer la factura con OCR (todo en el dispositivo) ---------- */
+
+  var TESS_VERSION = '5.1.1';
+  var cargaTesseract = null;
+  var camposTocados = {};
+
+  ['fecha', 'km', 'trabajo', 'coste'].forEach(function (id) {
+    var el = document.getElementById(id);
+    el.addEventListener('input', function () { camposTocados[id] = true; });
+    el.addEventListener('change', function () { camposTocados[id] = true; });
+  });
+
+  function cargarTesseract() {
+    if (window.Tesseract) return Promise.resolve();
+    if (cargaTesseract) return cargaTesseract;
+    cargaTesseract = new Promise(function (res, rej) {
+      var s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@' + TESS_VERSION + '/dist/tesseract.min.js';
+      s.onload = function () { res(); };
+      s.onerror = function () { rej(new Error('cdn')); };
+      document.head.appendChild(s);
+    });
+    return cargaTesseract;
+  }
+
+  function estadoFactura(txt, esError) {
+    var p = document.getElementById('estadoFactura');
+    p.textContent = txt;
+    p.classList.remove('oculto');
+    p.style.color = esError ? 'var(--danger)' : '';
+  }
+
+  function aplicarLectura(h) {
+    var puestos = [];
+    var faltan = [];
+    if (h.fecha && !camposTocados.fecha) {
+      document.getElementById('fecha').value = h.fecha;
+      puestos.push('fecha ' + fmtFecha(h.fecha));
+    } else if (!h.fecha) faltan.push('fecha');
+    if (h.km != null && !camposTocados.km) {
+      document.getElementById('km').value = h.km;
+      puestos.push(fmtNumero(h.km, 0) + ' km');
+    } else if (h.km == null) faltan.push('kilometraje');
+    if (h.coste != null && !camposTocados.coste) {
+      document.getElementById('coste').value = h.coste;
+      puestos.push(fmtNumero(h.coste, 2) + ' €');
+    } else if (h.coste == null) faltan.push('coste');
+    if (h.trabajo && !camposTocados.trabajo) {
+      document.getElementById('trabajo').value = h.trabajo;
+      puestos.push('descripción');
+    } else if (!h.trabajo) faltan.push('descripción');
+
+    var msg;
+    if (puestos.length) {
+      msg = 'He rellenado: ' + puestos.join(', ') + '.';
+      if (faltan.length) msg += ' No he encontrado: ' + faltan.join(', ') + '.';
+      msg += ' Revísalo todo antes de guardar, la lectura puede equivocarse.';
+    } else {
+      msg = 'No he encontrado datos claros en esa factura; rellénalos a mano. La foto se queda adjunta al registro.';
+    }
+    estadoFactura(msg, false);
+  }
+
+  document.getElementById('btnFactura').addEventListener('click', function () {
+    document.getElementById('inputFactura').click();
+  });
+
+  document.getElementById('inputFactura').addEventListener('change', function (e) {
+    var archivo = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!archivo) return;
+    if (!esImagen(archivo)) {
+      alert('La lectura automática solo funciona con una foto de la factura, no con otros archivos.');
+      return;
+    }
+    pendientes.push(archivo);
+    pintarPendientes();
+    estadoFactura('Preparando el lector (la primera vez descarga unos MB y necesita internet)…', false);
+    cargarTesseract()
+      .then(function () { return reducirImagen(archivo); })
+      .then(function (img) {
+        estadoFactura('Leyendo la factura… 0%', false);
+        return Tesseract.recognize(img, 'spa', {
+          workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@' + TESS_VERSION + '/dist/worker.min.js',
+          corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@' + TESS_VERSION,
+          langPath: 'https://cdn.jsdelivr.net/gh/naptha/tessdata@gh-pages/4.0.0_fast',
+          logger: function (m) {
+            if (m.status === 'recognizing text' && typeof m.progress === 'number') {
+              estadoFactura('Leyendo la factura… ' + Math.round(m.progress * 100) + '%', false);
+            }
+          }
+        });
+      })
+      .then(function (res) {
+        var texto = (res && res.data && res.data.text) || '';
+        aplicarLectura(FacturaParse.analizar(texto));
+      })
+      .catch(function () {
+        estadoFactura('No he podido leer la factura (la primera vez hace falta internet). Rellena los datos a mano; la foto se queda adjunta.', true);
+      });
+  });
+
   /* ---------- Historial ---------- */
 
   function abrirAdjunto(a) {
@@ -538,6 +810,8 @@
     existentes = [];
     quitados = [];
     pendientes = [];
+    camposTocados = {};
+    document.getElementById('estadoFactura').classList.add('oculto');
     pintarPendientes();
     document.getElementById('form').reset();
     document.getElementById('fecha').valueAsDate = new Date();
