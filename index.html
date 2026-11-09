@@ -181,9 +181,6 @@
   <div class="card">
     <h2 id="formTitulo">Nuevo mantenimiento</h2>
     <form id="form">
-      <button type="button" class="btn-secondary" id="btnFactura">📷 Foto de la factura y rellenar</button>
-      <input type="file" id="inputFactura" accept="image/*" capture="environment" class="oculto">
-      <p id="estadoFactura" class="nota oculto"></p>
 
       <label for="fecha">Fecha</label>
       <input type="date" id="fecha" required>
@@ -202,7 +199,15 @@
         <button type="button" class="btn-secondary" id="btnFoto">Hacer foto</button>
         <button type="button" class="btn-secondary" id="btnArchivo">Adjuntar archivo</button>
       </div>
+      <div id="opcionesFoto" class="oculto">
+        <p class="nota">¿Qué hago con la foto?</p>
+        <button type="button" class="btn-secondary" id="optLeer">Leer la factura y rellenar</button>
+        <button type="button" class="btn-secondary" id="optAdjuntar">Solo adjuntar la foto</button>
+        <button type="button" class="btn-secondary" id="optCancelarFoto">Cancelar</button>
+      </div>
+      <p id="estadoFactura" class="nota oculto"></p>
       <input type="file" id="inputFoto" accept="image/*" capture="environment" class="oculto">
+      <input type="file" id="inputFactura" accept="image/*" capture="environment" class="oculto">
       <input type="file" id="inputArchivo" multiple class="oculto">
       <div id="pendientes"></div>
 
@@ -567,8 +572,20 @@ var FacturaParse = (function () {
     pintarPendientes();
   }
 
+  var opcionesFoto = document.getElementById('opcionesFoto');
   document.getElementById('btnFoto').addEventListener('click', function () {
+    opcionesFoto.classList.remove('oculto');
+  });
+  document.getElementById('optAdjuntar').addEventListener('click', function () {
+    opcionesFoto.classList.add('oculto');
     document.getElementById('inputFoto').click();
+  });
+  document.getElementById('optLeer').addEventListener('click', function () {
+    opcionesFoto.classList.add('oculto');
+    document.getElementById('inputFactura').click();
+  });
+  document.getElementById('optCancelarFoto').addEventListener('click', function () {
+    opcionesFoto.classList.add('oculto');
   });
   document.getElementById('btnArchivo').addEventListener('click', function () {
     document.getElementById('inputArchivo').click();
@@ -644,10 +661,6 @@ var FacturaParse = (function () {
     }
     estadoFactura(msg, false);
   }
-
-  document.getElementById('btnFactura').addEventListener('click', function () {
-    document.getElementById('inputFactura').click();
-  });
 
   document.getElementById('inputFactura').addEventListener('change', function (e) {
     var archivo = e.target.files && e.target.files[0];
@@ -812,6 +825,7 @@ var FacturaParse = (function () {
     pendientes = [];
     camposTocados = {};
     document.getElementById('estadoFactura').classList.add('oculto');
+    document.getElementById('opcionesFoto').classList.add('oculto');
     pintarPendientes();
     document.getElementById('form').reset();
     document.getElementById('fecha').valueAsDate = new Date();
