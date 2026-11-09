@@ -143,6 +143,17 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .registro .acciones { display: flex; gap: 16px; margin-top: 6px; }
+  .registro .editar {
+    background: none;
+    border: none;
+    color: var(--accent);
+    font-size: .85rem;
+    padding: 4px 0;
+    margin-top: 6px;
+    width: auto;
+    cursor: pointer;
+  }
   .registro .borrar {
     background: none;
     border: none;
@@ -153,6 +164,7 @@
     width: auto;
     cursor: pointer;
   }
+  .registro .acciones .editar, .registro .acciones .borrar { margin-top: 0; }
   .vacio { color: var(--muted); text-align: center; padding: 12px 0; }
   .nota {
     font-size: .82rem;
@@ -167,7 +179,7 @@
 <header><h1>Mantenimiento de la autocaravana</h1></header>
 <main>
   <div class="card">
-    <h2>Nuevo mantenimiento</h2>
+    <h2 id="formTitulo">Nuevo mantenimiento</h2>
     <form id="form">
       <label for="fecha">Fecha</label>
       <input type="date" id="fecha" required>
@@ -191,6 +203,7 @@
       <div id="pendientes"></div>
 
       <button type="submit" class="btn-primary" id="btnGuardar">Guardar mantenimiento</button>
+      <button type="button" class="btn-secondary oculto" id="btnCancelar">Cancelar edición</button>
     </form>
   </div>
 
@@ -217,6 +230,9 @@
   var CALIDAD_JPEG = 0.85;
 
   var pendientes = [];
+  var existentes = [];
+  var quitados = [];
+  var editando = null;
 
   /* ---------- IndexedDB: binarios de los adjuntos ---------- */
 
@@ -337,6 +353,25 @@
   function pintarPendientes() {
     var cont = document.getElementById('pendientes');
     cont.innerHTML = '';
+    existentes.forEach(function (a, i) {
+      var chip = document.createElement('div');
+      chip.className = 'chip';
+      var nombre = document.createElement('span');
+      nombre.className = 'nombre';
+      nombre.textContent = a.nombre || 'adjunto';
+      var quitar = document.createElement('button');
+      quitar.type = 'button';
+      quitar.textContent = '×';
+      quitar.setAttribute('aria-label', 'Quitar ' + (a.nombre || 'adjunto'));
+      quitar.addEventListener('click', function () {
+        quitados.push(a.id);
+        existentes.splice(i, 1);
+        pintarPendientes();
+      });
+      chip.appendChild(nombre);
+      chip.appendChild(quitar);
+      cont.appendChild(chip);
+    });
     pendientes.forEach(function (f, i) {
       var chip = document.createElement('div');
       chip.className = 'chip';
@@ -465,6 +500,16 @@
         div.appendChild(caja);
       }
 
+      var acciones = document.createElement('div');
+      acciones.className = 'acciones';
+
+      var editar = document.createElement('button');
+      editar.className = 'editar';
+      editar.type = 'button';
+      editar.textContent = 'Editar';
+      editar.addEventListener('click', function () { cargarEdicion(r); });
+      acciones.appendChild(editar);
+
       var borrar = document.createElement('button');
       borrar.className = 'borrar';
       borrar.type = 'button';
@@ -477,12 +522,59 @@
         if (quitado && quitado.adjuntos) {
           quitado.adjuntos.forEach(function (a) { idbDel(a.id).catch(function () {}); });
         }
+        if (editando && quitado && quitado.id === editando) salirEdicion();
         pintar();
       });
-      div.appendChild(borrar);
+      acciones.appendChild(borrar);
+      div.appendChild(acciones);
       cont.appendChild(div);
     });
   }
+
+  /* ---------- Editar ---------- */
+
+  function salirEdicion() {
+    editando = null;
+    existentes = [];
+    quitados = [];
+    pendientes = [];
+    pintarPendientes();
+    document.getElementById('form').reset();
+    document.getElementById('fecha').valueAsDate = new Date();
+    document.getElementById('formTitulo').textContent = 'Nuevo mantenimiento';
+    document.getElementById('btnGuardar').textContent = 'Guardar mantenimiento';
+    document.getElementById('btnCancelar').classList.add('oculto');
+  }
+
+  function cargarEdicion(r) {
+    if (!r.id) {
+      r.id = nuevoId();
+      var l = cargar();
+      for (var k = 0; k < l.length; k++) {
+        if (!l[k].id && l[k].fecha === r.fecha && l[k].trabajo === r.trabajo &&
+            Number(l[k].km) === Number(r.km) && Number(l[k].coste) === Number(r.coste)) {
+          l[k].id = r.id;
+          break;
+        }
+      }
+      guardar(l);
+    }
+    editando = r.id;
+    document.getElementById('fecha').value = r.fecha;
+    document.getElementById('km').value = r.km;
+    document.getElementById('trabajo').value = r.trabajo;
+    document.getElementById('coste').value = r.coste;
+    existentes = (r.adjuntos || []).slice();
+    quitados = [];
+    pendientes = [];
+    pintarPendientes();
+    document.getElementById('formTitulo').textContent = 'Editar mantenimiento';
+    document.getElementById('btnGuardar').textContent = 'Guardar cambios';
+    document.getElementById('btnCancelar').classList.remove('oculto');
+    window.scrollTo(0, 0);
+  }
+
+  document.getElementById('btnCancelar').addEventListener('click', salirEdicion);
 
   /* ---------- Guardar ---------- */
 
@@ -493,7 +585,7 @@
       km: Number(document.getElementById('km').value),
       trabajo: document.getElementById('trabajo').value.trim(),
       coste: Number(document.getElementById('coste').value),
-      adjuntos: []
+      adjuntos: existentes.slice()
     };
     var archivos = pendientes.slice();
     var boton = document.getElementById('btnGuardar');
@@ -522,19 +614,32 @@
 
     cadena.then(function () {
       var lista = cargar();
-      lista.push(registro);
+      if (editando) {
+        var pos = -1;
+        for (var k = 0; k < lista.length; k++) {
+          if (lista[k].id === editando) { pos = k; break; }
+        }
+        if (pos === -1) {
+          alert('No se encontró el registro que estabas editando. Los cambios no se han guardado.');
+          salirEdicion();
+          return;
+        }
+        registro.id = editando;
+        lista[pos] = registro;
+        quitados.forEach(function (id) { idbDel(id).catch(function () {}); });
+      } else {
+        registro.id = nuevoId();
+        lista.push(registro);
+      }
       lista.sort(function (a, b) { return a.fecha < b.fecha ? 1 : a.fecha > b.fecha ? -1 : b.km - a.km; });
       guardar(lista);
-      pendientes = [];
-      pintarPendientes();
-      e.target.reset();
-      document.getElementById('fecha').valueAsDate = new Date();
+      salirEdicion();
       pintar();
     }).catch(function () {
       alert('No se pudo guardar el registro. Inténtalo de nuevo.');
     }).then(function () {
       boton.disabled = false;
-      boton.textContent = 'Guardar mantenimiento';
+      boton.textContent = editando ? 'Guardar cambios' : 'Guardar mantenimiento';
     });
   });
 
