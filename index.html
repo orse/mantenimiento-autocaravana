@@ -65,11 +65,37 @@
   }
   .btn-primary { background: var(--accent); color: #fff; }
   .btn-primary:active { background: var(--accent-dark); }
+  .btn-primary:disabled { opacity: .6; }
   .btn-secondary {
     background: #eef2ff;
     color: var(--accent);
     border: 1px solid var(--accent);
     margin-top: 8px;
+  }
+  .dos-col { display: flex; gap: 8px; }
+  .dos-col .btn-secondary { flex: 1; }
+  .chip {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    background: #f3f4f6;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin-top: 6px;
+    font-size: .9rem;
+  }
+  .chip .nombre { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip button {
+    width: auto;
+    margin: 0;
+    padding: 2px 8px;
+    background: none;
+    border: none;
+    color: var(--danger);
+    font-size: 1.1rem;
+    cursor: pointer;
   }
   h2 { font-size: 1.05rem; margin: 0 0 8px; }
   .registro {
@@ -86,6 +112,37 @@
   .registro .fecha { font-weight: 700; }
   .registro .km, .registro .coste { color: var(--muted); }
   .registro .desc { margin-top: 6px; white-space: pre-wrap; }
+  .registro .adjuntos {
+    margin-top: 8px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .registro img.mini {
+    width: 72px;
+    height: 72px;
+    object-fit: cover;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    cursor: pointer;
+    background: #f3f4f6;
+  }
+  .registro .adj-doc {
+    width: auto;
+    margin: 0;
+    padding: 10px 12px;
+    background: #f3f4f6;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: .85rem;
+    font-weight: 500;
+    color: var(--accent);
+    cursor: pointer;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .registro .borrar {
     background: none;
     border: none;
@@ -124,7 +181,16 @@
       <label for="coste">Coste (€)</label>
       <input type="number" id="coste" inputmode="decimal" min="0" step="0.01" placeholder="p. ej. 120.00" required>
 
-      <button type="submit" class="btn-primary">Guardar mantenimiento</button>
+      <label>Factura o foto (opcional)</label>
+      <div class="dos-col">
+        <button type="button" class="btn-secondary" id="btnFoto">Hacer foto</button>
+        <button type="button" class="btn-secondary" id="btnArchivo">Adjuntar archivo</button>
+      </div>
+      <input type="file" id="inputFoto" accept="image/*" capture="environment" class="oculto">
+      <input type="file" id="inputArchivo" multiple class="oculto">
+      <div id="pendientes"></div>
+
+      <button type="submit" class="btn-primary" id="btnGuardar">Guardar mantenimiento</button>
     </form>
   </div>
 
@@ -138,13 +204,73 @@
     <button id="exportar" class="btn-secondary" type="button">Descargar copia (JSON)</button>
     <button id="importarBtn" class="btn-secondary" type="button">Restaurar copia</button>
     <input type="file" id="importar" accept="application/json,.json" class="oculto">
-    <p class="nota">Los registros se guardan en este dispositivo. Descarga una copia de vez en cuando para no depender solo de este navegador; con «Restaurar copia» puedes recuperarla aquí o en otro dispositivo.</p>
+    <p class="nota">Los registros y sus fotos o archivos se guardan solo en este dispositivo; no se publican en internet. La copia descargada incluye también los adjuntos, así que puede pesar bastante: descárgala de vez en cuando y con «Restaurar copia» puedes recuperarlo todo aquí o en otro dispositivo.</p>
   </div>
 </main>
 
 <script>
 (function () {
   var CLAVE = 'mantenimientos_autocaravana';
+  var DB_NOMBRE = 'mantenimiento_autocaravana_db';
+  var DB_VERSION = 1;
+  var MAX_LADO = 1920;
+  var CALIDAD_JPEG = 0.85;
+
+  var pendientes = [];
+
+  /* ---------- IndexedDB: binarios de los adjuntos ---------- */
+
+  function abrirDB() {
+    return new Promise(function (res, rej) {
+      var req = indexedDB.open(DB_NOMBRE, DB_VERSION);
+      req.onupgradeneeded = function () {
+        if (!req.result.objectStoreNames.contains('adjuntos')) {
+          req.result.createObjectStore('adjuntos');
+        }
+      };
+      req.onsuccess = function () { res(req.result); };
+      req.onerror = function () { rej(req.error); };
+    });
+  }
+
+  function idbPut(id, blob) {
+    return abrirDB().then(function (db) {
+      return new Promise(function (res, rej) {
+        var tx = db.transaction('adjuntos', 'readwrite');
+        tx.objectStore('adjuntos').put(blob, id);
+        tx.oncomplete = function () { db.close(); res(); };
+        tx.onerror = function () { db.close(); rej(tx.error); };
+        tx.onabort = function () { db.close(); rej(tx.error); };
+      });
+    });
+  }
+
+  function idbGet(id) {
+    return abrirDB().then(function (db) {
+      return new Promise(function (res, rej) {
+        var req = db.transaction('adjuntos', 'readonly').objectStore('adjuntos').get(id);
+        req.onsuccess = function () { db.close(); res(req.result || null); };
+        req.onerror = function () { db.close(); rej(req.error); };
+      });
+    });
+  }
+
+  function idbDel(id) {
+    return abrirDB().then(function (db) {
+      return new Promise(function (res, rej) {
+        var tx = db.transaction('adjuntos', 'readwrite');
+        tx.objectStore('adjuntos').delete(id);
+        tx.oncomplete = function () { db.close(); res(); };
+        tx.onerror = function () { db.close(); rej(tx.error); };
+      });
+    });
+  }
+
+  function nuevoId() {
+    return 'a' + Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
+  }
+
+  /* ---------- Registros (localStorage, solo metadatos) ---------- */
 
   function cargar() {
     try {
@@ -164,6 +290,119 @@
 
   function fmtNumero(n, dec) {
     return Number(n).toLocaleString('es-ES', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+  }
+
+  /* ---------- Imágenes ---------- */
+
+  function esImagen(archivo) {
+    return /^image\//.test(archivo.type) && archivo.type !== 'image/svg+xml';
+  }
+
+  function reducirImagen(archivo) {
+    return new Promise(function (res) {
+      var url = URL.createObjectURL(archivo);
+      var img = new Image();
+      img.onload = function () {
+        var w = img.naturalWidth, h = img.naturalHeight;
+        if (!w || Math.max(w, h) <= MAX_LADO) {
+          URL.revokeObjectURL(url);
+          res(archivo);
+          return;
+        }
+        var esc = MAX_LADO / Math.max(w, h);
+        var canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(w * esc));
+        canvas.height = Math.max(1, Math.round(h * esc));
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+        URL.revokeObjectURL(url);
+        canvas.toBlob(function (b) {
+          if (b && b.size < archivo.size) {
+            var nombre = (archivo.name || 'foto').replace(/\.[a-z0-9]+$/i, '') + '.jpg';
+            res(new File([b], nombre, { type: 'image/jpeg' }));
+          } else {
+            res(archivo);
+          }
+        }, 'image/jpeg', CALIDAD_JPEG);
+      };
+      img.onerror = function () {
+        URL.revokeObjectURL(url);
+        res(archivo);
+      };
+      img.src = url;
+    });
+  }
+
+  /* ---------- Adjuntos pendientes en el formulario ---------- */
+
+  function pintarPendientes() {
+    var cont = document.getElementById('pendientes');
+    cont.innerHTML = '';
+    pendientes.forEach(function (f, i) {
+      var chip = document.createElement('div');
+      chip.className = 'chip';
+      var nombre = document.createElement('span');
+      nombre.className = 'nombre';
+      nombre.textContent = f.name || 'foto';
+      var quitar = document.createElement('button');
+      quitar.type = 'button';
+      quitar.textContent = '×';
+      quitar.setAttribute('aria-label', 'Quitar ' + (f.name || 'adjunto'));
+      quitar.addEventListener('click', function () {
+        pendientes.splice(i, 1);
+        pintarPendientes();
+      });
+      chip.appendChild(nombre);
+      chip.appendChild(quitar);
+      cont.appendChild(chip);
+    });
+  }
+
+  function anyadirPendientes(fileList) {
+    Array.prototype.slice.call(fileList).forEach(function (f) { pendientes.push(f); });
+    pintarPendientes();
+  }
+
+  document.getElementById('btnFoto').addEventListener('click', function () {
+    document.getElementById('inputFoto').click();
+  });
+  document.getElementById('btnArchivo').addEventListener('click', function () {
+    document.getElementById('inputArchivo').click();
+  });
+  document.getElementById('inputFoto').addEventListener('change', function (e) {
+    anyadirPendientes(e.target.files);
+    e.target.value = '';
+  });
+  document.getElementById('inputArchivo').addEventListener('change', function (e) {
+    anyadirPendientes(e.target.files);
+    e.target.value = '';
+  });
+
+  /* ---------- Historial ---------- */
+
+  function abrirAdjunto(a) {
+    var ventana = window.open('', '_blank');
+    idbGet(a.id).then(function (blob) {
+      if (!blob) {
+        if (ventana) ventana.close();
+        alert('No se encuentra este adjunto en el dispositivo.');
+        return;
+      }
+      var u = URL.createObjectURL(blob);
+      if (ventana) {
+        ventana.location.href = u;
+      } else {
+        var enlace = document.createElement('a');
+        enlace.href = u;
+        enlace.download = a.nombre || 'adjunto';
+        document.body.appendChild(enlace);
+        enlace.click();
+        document.body.removeChild(enlace);
+      }
+      setTimeout(function () { URL.revokeObjectURL(u); }, 60000);
+    }).catch(function () {
+      if (ventana) ventana.close();
+      alert('No se pudo abrir el adjunto.');
+    });
   }
 
   function pintar() {
@@ -194,6 +433,38 @@
       var desc = document.createElement('div');
       desc.className = 'desc';
       desc.textContent = r.trabajo;
+      div.appendChild(fila);
+      div.appendChild(desc);
+
+      if (r.adjuntos && r.adjuntos.length) {
+        var caja = document.createElement('div');
+        caja.className = 'adjuntos';
+        r.adjuntos.forEach(function (a) {
+          if (/^image\//.test(a.tipo || '')) {
+            var img = document.createElement('img');
+            img.className = 'mini';
+            img.alt = a.nombre || 'foto';
+            img.addEventListener('click', function () { abrirAdjunto(a); });
+            caja.appendChild(img);
+            idbGet(a.id).then(function (blob) {
+              if (blob) {
+                var u = URL.createObjectURL(blob);
+                img.onload = function () { URL.revokeObjectURL(u); };
+                img.src = u;
+              }
+            }).catch(function () {});
+          } else {
+            var doc = document.createElement('button');
+            doc.type = 'button';
+            doc.className = 'adj-doc';
+            doc.textContent = '📎 ' + (a.nombre || 'archivo');
+            doc.addEventListener('click', function () { abrirAdjunto(a); });
+            caja.appendChild(doc);
+          }
+        });
+        div.appendChild(caja);
+      }
+
       var borrar = document.createElement('button');
       borrar.className = 'borrar';
       borrar.type = 'button';
@@ -201,16 +472,19 @@
       borrar.addEventListener('click', function () {
         if (!confirm('¿Eliminar este registro?')) return;
         var l = cargar();
-        l.splice(i, 1);
+        var quitado = l.splice(i, 1)[0];
         guardar(l);
+        if (quitado && quitado.adjuntos) {
+          quitado.adjuntos.forEach(function (a) { idbDel(a.id).catch(function () {}); });
+        }
         pintar();
       });
-      div.appendChild(fila);
-      div.appendChild(desc);
       div.appendChild(borrar);
       cont.appendChild(div);
     });
   }
+
+  /* ---------- Guardar ---------- */
 
   document.getElementById('form').addEventListener('submit', function (e) {
     e.preventDefault();
@@ -218,28 +492,116 @@
       fecha: document.getElementById('fecha').value,
       km: Number(document.getElementById('km').value),
       trabajo: document.getElementById('trabajo').value.trim(),
-      coste: Number(document.getElementById('coste').value)
+      coste: Number(document.getElementById('coste').value),
+      adjuntos: []
     };
-    var lista = cargar();
-    lista.push(registro);
-    lista.sort(function (a, b) { return a.fecha < b.fecha ? 1 : a.fecha > b.fecha ? -1 : b.km - a.km; });
-    guardar(lista);
-    e.target.reset();
-    document.getElementById('fecha').valueAsDate = new Date();
-    pintar();
+    var archivos = pendientes.slice();
+    var boton = document.getElementById('btnGuardar');
+    boton.disabled = true;
+    boton.textContent = 'Guardando…';
+
+    var cadena = Promise.resolve();
+    archivos.forEach(function (f) {
+      cadena = cadena.then(function () {
+        var proc = esImagen(f) ? reducirImagen(f) : Promise.resolve(f);
+        return proc.then(function (final) {
+          var id = nuevoId();
+          return idbPut(id, final).then(function () {
+            registro.adjuntos.push({
+              id: id,
+              nombre: final.name || f.name || 'adjunto',
+              tipo: final.type || f.type || '',
+              tam: final.size
+            });
+          }).catch(function () {
+            alert('No se pudo guardar el adjunto «' + (f.name || 'foto') + '». El registro se guardará sin él.');
+          });
+        });
+      });
+    });
+
+    cadena.then(function () {
+      var lista = cargar();
+      lista.push(registro);
+      lista.sort(function (a, b) { return a.fecha < b.fecha ? 1 : a.fecha > b.fecha ? -1 : b.km - a.km; });
+      guardar(lista);
+      pendientes = [];
+      pintarPendientes();
+      e.target.reset();
+      document.getElementById('fecha').valueAsDate = new Date();
+      pintar();
+    }).catch(function () {
+      alert('No se pudo guardar el registro. Inténtalo de nuevo.');
+    }).then(function () {
+      boton.disabled = false;
+      boton.textContent = 'Guardar mantenimiento';
+    });
   });
 
+  /* ---------- Copia de seguridad (incluye adjuntos en base64) ---------- */
+
+  function blobADataURL(blob) {
+    return new Promise(function (res, rej) {
+      var fr = new FileReader();
+      fr.onload = function () { res(fr.result); };
+      fr.onerror = function () { rej(fr.error); };
+      fr.readAsDataURL(blob);
+    });
+  }
+
+  function dataURLaBlob(datos) {
+    var partes = String(datos).split(',');
+    if (partes.length !== 2) throw new Error('dataURL');
+    var mime = (partes[0].match(/data:([^;]+)/) || [])[1] || 'application/octet-stream';
+    var bin = atob(partes[1]);
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new Blob([bytes], { type: mime });
+  }
+
   document.getElementById('exportar').addEventListener('click', function () {
-    var datos = JSON.stringify(cargar(), null, 2);
-    var blob = new Blob([datos], { type: 'application/json' });
-    var url = URL.createObjectURL(blob);
-    var a = document.createElement('a');
-    a.href = url;
-    a.download = 'mantenimientos-autocaravana.json';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    var lista = cargar();
+    var salida = [];
+    var cadena = Promise.resolve();
+    lista.forEach(function (r) {
+      cadena = cadena.then(function () {
+        var copia = { fecha: r.fecha, km: r.km, trabajo: r.trabajo, coste: r.coste };
+        if (!r.adjuntos || !r.adjuntos.length) {
+          salida.push(copia);
+          return;
+        }
+        var adjuntos = [];
+        var cadAdj = Promise.resolve();
+        r.adjuntos.forEach(function (a) {
+          cadAdj = cadAdj.then(function () {
+            return idbGet(a.id).then(function (blob) {
+              if (!blob) return;
+              return blobADataURL(blob).then(function (datos) {
+                adjuntos.push({ nombre: a.nombre, tipo: a.tipo, datos: datos });
+              });
+            }).catch(function () {});
+          });
+        });
+        return cadAdj.then(function () {
+          if (adjuntos.length) copia.adjuntos = adjuntos;
+          salida.push(copia);
+        });
+      });
+    });
+    cadena.then(function () {
+      var datos = JSON.stringify(salida, null, 2);
+      var blob = new Blob([datos], { type: 'application/json' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = 'mantenimientos-autocaravana.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }).catch(function () {
+      alert('No se pudo generar la copia.');
+    });
   });
 
   document.getElementById('importarBtn').addEventListener('click', function () {
@@ -251,19 +613,55 @@
     if (!archivo) return;
     var lector = new FileReader();
     lector.onload = function () {
+      var datos;
       try {
-        var datos = JSON.parse(lector.result);
+        datos = JSON.parse(lector.result);
         if (!Array.isArray(datos)) throw new Error('formato');
         datos = datos.filter(function (r) {
           return r && typeof r.fecha === 'string' && typeof r.trabajo === 'string' &&
                  !isNaN(Number(r.km)) && !isNaN(Number(r.coste));
         });
+      } catch (err) {
+        alert('No se pudo leer la copia. Asegúrate de usar el archivo JSON descargado desde esta app.');
+        return;
+      }
+      var cadena = Promise.resolve();
+      datos.forEach(function (r) {
+        cadena = cadena.then(function () {
+          if (!Array.isArray(r.adjuntos)) {
+            delete r.adjuntos;
+            return;
+          }
+          var meta = [];
+          var cadAdj = Promise.resolve();
+          r.adjuntos.forEach(function (a) {
+            cadAdj = cadAdj.then(function () {
+              if (!a || !a.datos) return;
+              var blob;
+              try { blob = dataURLaBlob(a.datos); } catch (err) { return; }
+              var id = nuevoId();
+              return idbPut(id, blob).then(function () {
+                meta.push({
+                  id: id,
+                  nombre: a.nombre || 'adjunto',
+                  tipo: a.tipo || blob.type || '',
+                  tam: blob.size
+                });
+              }).catch(function () {});
+            });
+          });
+          return cadAdj.then(function () {
+            if (meta.length) r.adjuntos = meta; else delete r.adjuntos;
+          });
+        });
+      });
+      cadena.then(function () {
         guardar(datos);
         pintar();
         alert('Copia restaurada: ' + datos.length + ' registro(s).');
-      } catch (err) {
-        alert('No se pudo leer la copia. Asegúrate de usar el archivo JSON descargado desde esta app.');
-      }
+      }).catch(function () {
+        alert('No se pudieron restaurar los adjuntos. Inténtalo de nuevo.');
+      });
     };
     lector.readAsText(archivo);
     e.target.value = '';
